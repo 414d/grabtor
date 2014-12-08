@@ -1,0 +1,6 @@
+/dist/
+ABS/
+Scripts/
+.cabal-sandbox
+cabal.sandbox.config
+*~
