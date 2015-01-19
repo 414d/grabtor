@@ -1,5 +1,5 @@
 name:                grabtor
-version:             0.1.0.0
+version:             0.2.0.0
 synopsis:            A graphic battery status monitor adapted for xmobar.
 description:         Grabtor is a command line program to show the text based battery icon.
 		     It is written as an external command to use it with xmobar.

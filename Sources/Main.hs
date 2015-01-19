@@ -17,6 +17,4 @@ import System.Environment
 
 main = do
   args <- getArgs
-
-  output <- showMonitor args
-  putStrLn output
+  showMonitor args

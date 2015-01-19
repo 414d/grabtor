@@ -23,6 +23,7 @@ import Text.Printf
 import Data.Char
 import Data.Maybe  
 import Control.Monad
+import Control.Concurrent
 
 
 data BattOptions = BattOptions
@@ -39,11 +40,16 @@ data BattOptions = BattOptions
                      lowThreshold :: Int,
                      highThreshold :: Int,
                      chunkCount :: Int,
+                     useLargestChunks :: Bool,
 
                      batDir :: String,
-                     timeFormat :: String,
 
-                     timePos :: String
+                     timeFormat :: Maybe String,
+                     timePos :: String,
+
+                     brackets :: Maybe (String, String),
+
+                     refreshRate :: Float
                    }
 
                  
@@ -61,11 +67,16 @@ defaultOptions = BattOptions
                    lowThreshold = 20,
                    highThreshold = 60,
                    chunkCount = 5,
+                   useLargestChunks = False,
 
                    batDir = "BAT0",
-                   timeFormat = "%2d:%d",
 
-                   timePos = "r"
+                   timeFormat = Just "%2d:%d",
+                   timePos = "r",
+
+                   brackets = Just ("[", "}"),
+
+                   refreshRate = 1
                  }
  
 
@@ -74,9 +85,10 @@ options = [
   	     Option "h?" ["help"]	       (NoArg(\_ -> do
     	     	    	 		       		     name <- getProgName
 							     let header = "Usage: " ++ name ++ " [OPTION...]\n\
-                                                             \To show the output in xmobar add to xmobar config \
-                                                             \Run Com \"grabtor\" [] \"\" 10 for commands field\n\
-                                                             \%grabtor% for template field.\nOptions and defaults:"
+                                                             \To show the output in xmobar add to xmobar config:\n\
+                                                             \Run CommandReader \"killall grabtor; grabtor\" \"grabtor\" \
+                                                             \for the commands field and\n\
+                                                             \%grabtor% for the template field.\nOptions and defaults:"
                 					     putStr (usageInfo header options)
                 					     exitWith ExitSuccess) ) "Show this help and exit"
 
@@ -89,7 +101,7 @@ options = [
 	     	    			       	       (lowColorFlicker defaultOptions) )
 						       "The color for the icon's flicker when the battery has its charge below\nthe \
 						        \critical low threshold. In this case the color will switch\nfrom the low \
-						        \color to the low color flicker\n\n"
+						        \color to this color cyclically\n\n"
 									       
 	   , Option "n" ["normal"] 	       (ReqArg (\arg opt -> return opt {normalColor = arg} ) (normalColor defaultOptions) )
 	     	    			       	       "The color of the icon when the battery has its charge between \
@@ -105,7 +117,7 @@ options = [
 						       "The color for the icon's flicker when the battery has full charge and\
 						       \\none is connected to ac current. \
 						       \In this case the color will switch\nfrom the high color to \
-						       \the high color flicker\n\n"
+						       \this color cyclically\n\n"
 									       
 	   , Option "a" ["charging"]	       (ReqArg (\arg opt -> return opt {chargingColor = arg} )
 	     	    			       	       (chargingColor defaultOptions) )
@@ -113,7 +125,7 @@ options = [
 						       
 	   , Option "d" ["disable-time-coloring"] (NoArg (\opt -> return opt {disableTimeColoring = True} ) )
 	     	    			       	      	 "Don't colorize time remaining up to charging/discharging"
-	   
+
 	   , Option "r" ["critical-low"]       (ReqArg (\arg opt -> return opt {criticalLowThreshold = read arg} )
 	     	    			       	       (show $ criticalLowThreshold $ defaultOptions) )
 						       "The critical low threshold of the charge. The valid value is between\n\
@@ -133,38 +145,60 @@ options = [
 	     	    			       	       (show $ chunkCount defaultOptions) )
 						       "The chunks' amount to show the charge level. Valid values are from 1 to 5\n\n"
 
+           , Option "" ["largest-chunks"]      (NoArg (\opt -> return opt {useLargestChunks = True} ) )
+                                                      "Use largest chunks to show the battery icon"
+
 	   , Option "D" ["bat-dir"]	       (ReqArg (\arg opt -> return opt {batDir = arg} )
-	     	    			       	       (show $ batDir defaultOptions) )
+                                                       (batDir defaultOptions) )
 						       "The directory name in /sys/class/power_supply/ where to look for ACPI files\n\
 						       \for the battery\n\n"
 									       
-	   , Option "m" ["time-format"]	       (ReqArg (\arg opt -> return opt {timeFormat = arg} )
-	     	    			       	       (show $ timeFormat defaultOptions) )
-						       "The time format for printf. The time means time up to charging/discharging.\n\
-                                                        \The empty string will hide the time\n\n"
+	   , Option "m" ["time-format"]	       (OptArg (\arg opt -> return opt {timeFormat = arg} )
+                                                       (fromJust $ timeFormat defaultOptions) )
+						       "The time format for printf. First number in the format string is hours,\n\
+                                                        \second one is minutes. The time means time up to charging/discharging.\n\
+                                                        \The lack of an argument or an empty string will hide the time\n\n"
 									       
 	   , Option "p" ["time-pos"]	       (ReqArg (\arg opt -> return opt {timePos = arg} )
-	     	    			       	       (show $ timePos $ defaultOptions) )
+                                                       (timePos $ defaultOptions) )
 	        				       "Show the time to the left/right of the battery icon. Valid values are \"r\" or\
-	        				       \ \"l\""
+                                                       \ \"l\"\n\n"
+
+           , Option "" ["brackets"]            (OptArg (\arg opt ->
+                                                            if isJust arg
+                                                            then return opt {brackets =
+                                                                                 (\str ->
+                                                                                      let (first, second) = span (/= ',') str
+                                                                                      in Just (first ++ "", dropWhile (== ',') second)
+                                                                                 ) $ fromJust arg}
+                                                            else return opt {brackets = Nothing} )
+                                                       ( (\(l,r) -> l ++ "," ++ r) $ fromJust $ brackets defaultOptions ) )
+                                                       "The pair of strings or usually single chars separated by comma to use them\n\
+                                                       \as left and right brackets around the battery icon. \
+                                                       \The lack of an argument or\nan empty string will hide the brackets\n\n"
+
+           , Option "" ["rate"]                (ReqArg (\arg opt -> return opt {refreshRate = read arg} )
+                                                       (show $ refreshRate defaultOptions) )
+						       "The refresh rate in seconds of the battery icon. The value can be fractional\n\n"
 	  ]
  
 
 sysDir = "/sys/class/power_supply"
 
 
+printErrorAndExit s = do putStrLn s
+                         exitWith $ ExitFailure $ 1
+
+
 getOptions :: [String] -> IO BattOptions
 getOptions argv = do
-  when (not $ null $ errors) (printErrorAndExit $ dropTrailingBlanks $ foldl1 (++) errors)
+  when (not $ null errors) (printErrorAndExit $ dropTrailingBlanks $ foldl1 (++) errors)
 	   
   opts <- foldl (>>=) (return defaultOptions) actions
   checkAndExitOnWrongOption opts
 	   
     where (actions, _, errors) = getOpt RequireOrder options argv
           dropTrailingBlanks s = reverse $ dropWhile isSpace $ reverse s
-                                        
-	  printErrorAndExit s = do putStrLn s
-                                   exitWith $ ExitFailure $ 1
 
 	  checkAndExitOnWrongOption opts
 	      | not (chunkCount opts >= 1 && chunkCount opts <= 5) =
@@ -196,15 +230,19 @@ data BattInfo = BattInfo
 getBattInfo :: BattOptions -> IO BattInfo
 getBattInfo opts = do
   s <- getFirstLineFromFile (path </> "charge_full")
+  when (isNothing s) (printErrorAndExit $ path </> "charge_full is empty or not existing")
   let chFull = read $ fromJust s
 
   s <- getFirstLineFromFile (path </> "charge_now")
+  when (isNothing s) (printErrorAndExit $ path </> "charge_now is empty or not existing")
   let chNow = read $ fromJust s
 
   s <- getFirstLineFromFile (path </> "current_now")
+  when (isNothing s) (printErrorAndExit $ path </> "current_now is empty or not existing")
   let current = read $ fromJust s
 
   status <- getFirstLineFromFile (path </> "status")
+  when (isNothing status) (printErrorAndExit $ path </> "status is empty or not existing")
 
   let hours = truncate $ (chFull - chNow) / current
   let mins = round $ 60 * ( (chFull - chNow) / current - fromIntegral hours)
@@ -248,51 +286,26 @@ defaultMonitorStateInfo = MonitorStateInfo
                             frame = Nothing
                           }
                           
-
-getMonitorStateInfo :: IO MonitorStateInfo
-getMonitorStateInfo = do
-  l <- getFirstLineFromFile "/tmp/lowColorFlicker"
-  h <- getFirstLineFromFile "/tmp/highColorFlicker"
-
-  line <- getFirstLineFromFile "/tmp/chargingFrame"
-             
-  let frameStr = fromMaybe "0 0" line
-
-  return MonitorStateInfo
-           {
-             lowColorFlickerValue = l,
-             highColorFlickerValue = h,
-             frame = Just Frame
-             {
-               chunks = read $ head $ words $ frameStr,
-               partOfChunk = read $ last $ words $ frameStr
-             }
-           }
-
-
-saveMonitorStateInfo :: MonitorStateInfo -> IO ()
-saveMonitorStateInfo info = do                        
-  writeStringToFile (lowColorFlickerValue info) "/tmp/lowColorFlicker"
-  writeStringToFile (highColorFlickerValue info) "/tmp/highColorFlicker"
-  writeStringToFile frameStr "/tmp/chargingFrame"
-                    
-  where frameStr = if isJust $ frame info
-                   then let f = fromJust $ frame info
-                            c = chunks f
-                            p = partOfChunk f
-                        in Just ( (show c) ++ " " ++ (show p) ) 
-                   else Nothing
-                 
   
-chunkPartsToString :: Int -> String
-chunkPartsToString part | part == 0 = ""
-		        | part == 1 = "▍"
-			| part == 2 = "▌"
-			| part == 3 = "▋"
-			| part == 4 = "▊"
+chunkPartsToString :: Int -> BattOptions -> String
+chunkPartsToString part opts =
+    if useLargestChunks opts == True
+    then case part of
+           0 -> ""
+	   1 -> "▌"
+	   2 -> "▋"
+           3 -> "▊"
+           4 -> "▉"
+    else case part of
+           0 -> ""
+	   1 -> "▍"
+	   2 -> "▌"
+           3 -> "▋"
+	   4 -> "▊"
 
-			  
-getOneChunk = '▉'
+
+getOneChunk :: BattOptions -> Char
+getOneChunk opts = if useLargestChunks opts == True then '█' else '▉'
 
 
 getEmptyChunk = '_'
@@ -307,9 +320,11 @@ chargeToColor percent opts | percent < lowThreshold opts = lowColor opts
 			   | percent >= highThreshold opts = highColor opts
 
 			      
-chargeToString :: Int -> Int -> (String, Int)
-chargeToString percent battChunksCount = (stringView, emptyChunksAmount)
-    where percentsInAChunk = 100 `div` battChunksCount
+chargeToString :: Int -> BattOptions -> (String, Int)
+chargeToString percent opts = (stringView, emptyChunksAmount)
+    where battChunksCount = chunkCount opts
+
+          percentsInAChunk = 100 `div` battChunksCount
 	  percentsInAChunkPart = percentsInAChunk `div` getChunkPartsCount
 			    
 	  chunksToShow = percent `div` percentsInAChunk + partsOfChunk `div` getChunkPartsCount
@@ -319,7 +334,7 @@ chargeToString percent battChunksCount = (stringView, emptyChunksAmount)
 
 	  partsOfChunk = round ( (fromIntegral remOfPercent) / (fromIntegral percentsInAChunkPart) )
 
-          stringView = take chunksToShow (repeat getOneChunk) ++ chunkPartsToString chunkPartsToShow
+          stringView = take chunksToShow (repeat $ getOneChunk opts) ++ chunkPartsToString chunkPartsToShow opts
 			    								       
 	  emptyChunksAmount = (battChunksCount - length stringView)
 			    		      	 
@@ -328,13 +343,13 @@ emptyChunksToString :: Int -> String
 emptyChunksToString emptyChunksAmount = take emptyChunksAmount (repeat getEmptyChunk)
 
 
-chargingFrameToString :: Frame -> Int -> (String, Frame)
-chargingFrameToString _ 0 = ("", defaultFrame)
-chargingFrameToString curFrame emptyChunksAmount = (stringView, nextFrame)
+chargingFrameToString :: Frame -> Int -> BattOptions-> (String, Frame)
+chargingFrameToString _ 0 _= ("", defaultFrame)
+chargingFrameToString curFrame emptyChunksAmount opts = (stringView, nextFrame)
     where curChunks = chunks curFrame
           curPartOfChunk = partOfChunk curFrame
                                              
-          stringView = take curChunks (repeat getOneChunk) ++ chunkPartsToString curPartOfChunk
+          stringView = take curChunks (repeat $ getOneChunk opts) ++ chunkPartsToString curPartOfChunk opts
 
 	  normalChunks = curChunks `mod` emptyChunksAmount
 	  normalPartOfChunk = curPartOfChunk `mod` getChunkPartsCount
@@ -376,49 +391,57 @@ battInfoToColors battInfo monStateInfo opts = (chargeColor, colorFlicker)
 		      	      
 
 timeLeftToString :: BattInfo -> BattOptions -> String
-timeLeftToString _ opts    | timeFormat opts == "" = ""
-timeLeftToString battInfo opts = printf (timeFormat opts) hours mins
+timeLeftToString battInfo opts = if not $ null format
+                                 then printf format hours mins
+                                 else ""
 		 where (hours, mins) = timeLeft battInfo
+                       format = fromMaybe "" $ timeFormat opts
 
 
 makeTimeIcon :: BattInfo -> MonitorStateInfo -> BattOptions -> String
 makeTimeIcon battInfo monStateInfo opts = timeIcon
     where timeStr = timeLeftToString battInfo opts
-                     
+
           timeIcon = if disableTimeColoring opts
                      then timeStr
                      else let (chargeColor, colorFlicker) = battInfoToColors battInfo monStateInfo opts
                               color = fromMaybe chargeColor colorFlicker
-                          in colorizeString color timeStr
+                          in if not $ null timeStr
+                             then colorizeString color timeStr
+                             else ""
 		       
 
 makeBattIcon :: BattInfo -> MonitorStateInfo -> BattOptions -> (String, Maybe String)
 makeBattIcon battInfo monStateInfo opts = (battIcon, colorFlicker)
-    where (chargeString, emptyChunksAmount) = chargeToString (percents battInfo) (chunkCount opts)
+    where (chargeString, emptyChunksAmount) = chargeToString (percents battInfo) opts
 			     
           (chargeColor, colorFlicker) = battInfoToColors battInfo monStateInfo opts
+
+          (leftBracket, rightBracket) = fromMaybe ("", "") $ brackets opts
                                         
           battIcon = if isNothing colorFlicker
-		     then "[" ++ colorizeString chargeColor chargeString ++ emptyChunksString ++ "}"
+		     then leftBracket ++ colorizeString chargeColor chargeString ++ emptyChunksString ++ rightBracket
                                    
-		     else colorizeString (fromJust colorFlicker) ("[" ++ chargeString ++ emptyChunksString ++ "}")
+		     else colorizeString (fromJust colorFlicker) (leftBracket ++ chargeString ++ emptyChunksString ++ rightBracket)
 					   
 	  emptyChunksString = emptyChunksToString emptyChunksAmount			     
 			     
 			     
 makeChargingBattIcon :: BattInfo -> MonitorStateInfo -> BattOptions -> (String, Frame, Maybe String)
 makeChargingBattIcon battInfo monStateInfo opts = (battIcon, nextFrame, colorFlicker)
-    where (chargeString, emptyChunksAmount) = chargeToString (percents battInfo) (chunkCount opts)
+    where (chargeString, emptyChunksAmount) = chargeToString (percents battInfo) opts
 
           (chargeColor, colorFlicker) = battInfoToColors battInfo monStateInfo opts
 
- 	  battIcon = if isNothing colorFlicker
-		     then "[" ++ colorizeString chargeColor chargeString ++
-			  colorizeString (chargingColor opts) frameStr ++ emptyChunksString ++ "}"
-                                           
-		     else colorizeString (fromJust colorFlicker) ("[" ++ chargeString ++ "}")
+          (leftBracket, rightBracket) = fromMaybe ("", "") $ brackets opts
 
-          (frameStr, nextFrame) = chargingFrameToString (fromJust $ frame monStateInfo) emptyChunksAmount
+ 	  battIcon = if isNothing colorFlicker
+		     then leftBracket ++ colorizeString chargeColor chargeString ++
+			  colorizeString (chargingColor opts) frameStr ++ emptyChunksString ++ rightBracket
+                                           
+		     else colorizeString (fromJust colorFlicker) (leftBracket ++ chargeString ++ rightBracket)
+
+          (frameStr, nextFrame) = chargingFrameToString (fromMaybe defaultFrame $ frame monStateInfo) emptyChunksAmount opts
                            
           emptyChunksString = emptyChunksToString (emptyChunksAmount - length frameStr)
 		       
@@ -434,19 +457,6 @@ getFirstLineFromFile path = do
              then return Nothing
              else do s <- hGetLine h; return (Just s)
   else return Nothing
-
-
-writeStringToFile :: Maybe String -> String -> IO ()
-writeStringToFile str path = do
-  when (isJust str) (writeFile path $ fromJust str)
-  emptyFile <- isEmptyFile path
-  when (isNothing str &&  (not $ fromMaybe True emptyFile) ) (writeFile path "")
-    where isEmptyFile path = do
-            fileExists <- doesFileExist path
-            if fileExists
-            then do stat <- getFileStatus path
-                    return $ Just $ (fileSize stat == 0)
-            else return Nothing
 
 
 battInfoToString :: BattInfo -> MonitorStateInfo -> BattOptions -> (String, MonitorStateInfo)
@@ -473,14 +483,23 @@ battInfoToString battInfo monStateInfo opts = (stringView, newMonStateInfo)
                          "r" -> battIcon ++ timeIcon
                          "l" -> timeIcon ++ battIcon
        
+
+loop :: MonitorStateInfo -> BattOptions -> IO String
+loop monStateInfo opts = do
+  battInfo <- getBattInfo opts
+
+  let (monitorOutput, newMonStateInfo) = battInfoToString battInfo monStateInfo opts
+
+  putStrLn monitorOutput
+
+  threadDelay (round $ (refreshRate opts) * 10^6)
+
+  loop newMonStateInfo opts
+
         
 showMonitor :: [String] -> IO String
-showMonitor args =
-    do opts <- getOptions args
-       battInfo <- getBattInfo opts
-       monStateInfo <- getMonitorStateInfo
+showMonitor args = do
+  opts <- getOptions args
+  hSetBuffering stdout LineBuffering
 
-       let (monitorOutput, newMonStateInfo) = battInfoToString battInfo monStateInfo opts
-                                              
-       saveMonitorStateInfo newMonStateInfo
-       return monitorOutput
+  loop defaultMonitorStateInfo opts
