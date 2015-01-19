@@ -15,14 +15,16 @@ Config { font = "xft:DejaVuSansMono"
        , pickBroadest = False
        , persistent = False
        , hideOnStart = False
-       , commands = [Run Com "grabtor" [] "" 10]
+       , commands = [
+                     Run CommandReader "killall grabtor; grabtor" "grabtor"
+                    ]
        , sepChar = "%"
        , alignSep = "}{"
        , template = "} %grabtor% {"
        }
 ```
 
-In other words you should add the item **Run Com "grabtor" [] "" 10** to the **commands** list and the string **grabtor** with **sepChar** around it to the **template**.
+In other words you should add the item **Run CommandReader "killall grabtor; grabtor" "grabtor"** to the **commands** list and the string **grabtor** with **sepChar** around it to the **template**.
 
 Help is:
 ```
